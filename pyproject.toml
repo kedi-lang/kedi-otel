@@ -3,7 +3,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "kedi-otel-instrumentation"
+name = "opentelemetry-instrumentation-kedi"
 version = "0.1.0"
 description = "OpenTelemetry instrumentation for the Kedi programming language"
 readme = "README.md"

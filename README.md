@@ -1,6 +1,6 @@
 # Kedi OpenTelemetry Instrumentation
 
-`kedi-otel-instrumentation` connects Kedi's dependency-free telemetry seam to
+`opentelemetry-instrumentation-kedi` connects Kedi's dependency-free telemetry seam to
 OpenTelemetry. Importing Kedi remains a no-op; telemetry starts only after the
 instrumentor is enabled.
 

@@ -18,7 +18,7 @@ _UNSET = object()
 
 def _package_version() -> str:
     try:
-        return version("kedi-otel-instrumentation")
+        return version("opentelemetry-instrumentation-kedi")
     except PackageNotFoundError:
         return _FALLBACK_VERSION
 
@@ -82,7 +82,7 @@ class KediInstrumentor(BaseInstrumentor):
                     from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor
                 except ImportError as exc:
                     raise ModuleNotFoundError(
-                        "HTTPX instrumentation requires kedi-otel-instrumentation[httpx]"
+                        "HTTPX instrumentation requires opentelemetry-instrumentation-kedi[httpx]"
                     ) from exc
                 httpx_instrumentor = HTTPXClientInstrumentor()
                 already_instrumented = httpx_instrumentor.is_instrumented_by_opentelemetry
