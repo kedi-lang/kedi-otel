@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import traceback
 from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -9,7 +11,7 @@ from typing import Any, Literal, cast
 from opentelemetry import metrics, trace
 from opentelemetry.metrics import MeterProvider
 from opentelemetry.trace import SpanKind as OtelSpanKind
-from opentelemetry.trace import TracerProvider
+from opentelemetry.trace import Status, StatusCode, TracerProvider
 
 from kedi.telemetry import (
     Attributes,
@@ -30,7 +32,13 @@ _SCOPE_NAMES: dict[TelemetryScope, str] = {
     "agentic": "kedi.agentic",
     "artifacts": "kedi.artifacts",
 }
-_GEN_AI_OPERATIONS = frozenset({"run_agent", "chat", "call_tool"})
+_GEN_AI_OPERATIONS = {
+    "run_agent": "invoke_agent",
+    "chat": "chat",
+    "call_tool": "execute_tool",
+}
+_MAX_EXCEPTION_MESSAGE_CHARS = 1_000
+_MAX_EXCEPTION_STACKTRACE_CHARS = 8_000
 
 
 @dataclass(frozen=True, slots=True)
@@ -40,7 +48,14 @@ class KediTelemetryConfig:
     agentic_enabled: bool = True
     artifacts_enabled: bool = True
     capture_content: bool = False
-    capture_source: bool = False
+    capture_binary_content: bool = False
+    capture_source_paths: bool = False
+    capture_source_snippets: bool = False
+    capture_model_request_parameters: bool = False
+    capture_tool_definitions: bool = False
+    capture_exception_messages: bool = False
+    capture_exception_stacktraces: bool = False
+    max_metric_instruments: int = 128
     native_span_owners: Mapping[str, frozenset[str]] = field(default_factory=dict)
 
     def scope_enabled(self, scope: TelemetryScope, level: SpanLevel) -> bool:
@@ -56,35 +71,52 @@ class KediTelemetryConfig:
 
 
 class OpenTelemetrySpan:
-    __slots__ = ("_span",)
+    __slots__ = ("_attributes", "_config", "_exception_recorded", "_span")
 
-    def __init__(self, span: trace.Span) -> None:
+    def __init__(
+        self,
+        span: trace.Span,
+        config: KediTelemetryConfig,
+        initial_attributes: Mapping[str, AttributeValue] | None = None,
+    ) -> None:
         self._span = span
+        self._config = config
+        self._attributes = dict(initial_attributes or {})
+        self._exception_recorded = False
 
     def is_recording(self) -> bool:
         return self._span.is_recording()
 
     def get_attribute(self, name: str) -> AttributeValue | None:
-        attributes = getattr(self._span, "attributes", None)
-        if not isinstance(attributes, Mapping):
-            return None
-        value = attributes.get(name)
-        return _attribute_value(value)
+        return self._attributes.get(name)
 
     def set_attribute(self, name: str, value: AttributeValue) -> None:
         safe = _attribute_value(value)
         if safe is not None:
+            self._attributes[name] = safe
             self._span.set_attribute(name, cast(Any, safe))
 
     def add_event(self, name: str, attributes: Attributes | None = None) -> None:
         self._span.add_event(name, attributes=cast(Any, _attributes(attributes)))
 
     def record_exception(self, exc: BaseException) -> None:
-        self._span.record_exception(exc)
+        if self._exception_recorded:
+            return
+        self._exception_recorded = True
+        attributes: dict[str, AttributeValue] = {
+            "exception.type": f"{type(exc).__module__}.{type(exc).__qualname__}",
+        }
+        if self._config.capture_exception_messages:
+            attributes["exception.message"] = str(exc)[:_MAX_EXCEPTION_MESSAGE_CHARS]
+        if self._config.capture_exception_stacktraces:
+            attributes["exception.stacktrace"] = "".join(
+                traceback.format_exception(type(exc), exc, exc.__traceback__)
+            )[:_MAX_EXCEPTION_STACKTRACE_CHARS]
+        self.add_event("exception", attributes)
 
     def update_name(self, name: str) -> None:
         self._span.update_name(name)
-        self._span.set_attribute("logfire.msg", name)
+        self.set_attribute("logfire.msg", name)
 
 
 def _attribute_value(value: object) -> AttributeValue | None:
@@ -137,7 +169,9 @@ class OpenTelemetryBackend:
         self._counters: dict[tuple[TelemetryScope, str, str], Any] = {}
         self._up_down_counters: dict[tuple[TelemetryScope, str, str], Any] = {}
         self._histograms: dict[tuple[TelemetryScope, str, str], Any] = {}
+        self._metric_instrument_count = 0
         self._noop = NoOpTelemetryBackend()
+        self._noop_meter = metrics.NoOpMeterProvider().get_meter("kedi.noop")
 
     @contextmanager
     def start_span(
@@ -165,20 +199,28 @@ class OpenTelemetryBackend:
         span_attributes = dict(_attributes(attributes) or {})
         span_attributes["kedi.operation.name"] = operation
         span_attributes["logfire.msg"] = name
-        if operation in _GEN_AI_OPERATIONS:
-            span_attributes["gen_ai.operation.name"] = operation
+        if semantic_operation := _GEN_AI_OPERATIONS.get(operation):
+            span_attributes["gen_ai.operation.name"] = semantic_operation
         otel_kind = OtelSpanKind.CLIENT if kind == "client" else OtelSpanKind.INTERNAL
         with self._tracers[scope].start_as_current_span(
             name,
             kind=otel_kind,
             attributes=cast(Any, span_attributes),
-            record_exception=True,
-            set_status_on_exception=True,
+            record_exception=False,
+            set_status_on_exception=False,
         ) as raw_span:
-            yield OpenTelemetrySpan(raw_span)
+            active = OpenTelemetrySpan(raw_span, self.config, span_attributes)
+            try:
+                yield active
+            except asyncio.CancelledError:
+                raise
+            except BaseException as exc:
+                active.record_exception(exc)
+                raw_span.set_status(Status(StatusCode.ERROR))
+                raise
 
     def current_span(self) -> TelemetrySpan:
-        return OpenTelemetrySpan(trace.get_current_span())
+        return OpenTelemetrySpan(trace.get_current_span(), self.config)
 
     def enabled(self, scope: TelemetryScope, level: SpanLevel) -> bool:
         return self.config.scope_enabled(scope, level)
@@ -235,7 +277,11 @@ class OpenTelemetryBackend:
         return operation in self.config.native_span_owners.get(adapter_shortname, ())
 
     def capture_enabled(self, kind: CaptureKind) -> bool:
-        return self.config.capture_content if kind == "content" else self.config.capture_source
+        if kind == "content":
+            return self.config.capture_content
+        if kind == "source_path":
+            return self.config.capture_source_paths
+        return self.config.capture_source_snippets
 
     def _instrument(
         self,
@@ -250,6 +296,8 @@ class OpenTelemetryBackend:
             instrument = cache.get(key)
             if instrument is not None:
                 return instrument
+            if self._metric_instrument_count >= self.config.max_metric_instruments:
+                return self._noop_instrument(kind, name, unit)
             meter = self._meters[scope]
             if kind == "counter":
                 instrument = meter.create_counter(name, unit=unit)
@@ -258,4 +306,17 @@ class OpenTelemetryBackend:
             else:
                 instrument = meter.create_histogram(name, unit=unit)
             cache[key] = instrument
+            self._metric_instrument_count += 1
             return instrument
+
+    def _noop_instrument(
+        self,
+        kind: Literal["counter", "up_down_counter", "histogram"],
+        name: str,
+        unit: str,
+    ) -> Any:
+        if kind == "counter":
+            return self._noop_meter.create_counter(name, unit=unit)
+        if kind == "up_down_counter":
+            return self._noop_meter.create_up_down_counter(name, unit=unit)
+        return self._noop_meter.create_histogram(name, unit=unit)

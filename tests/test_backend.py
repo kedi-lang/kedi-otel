@@ -5,12 +5,14 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from typing import Any
 
+import pytest
 from opentelemetry.sdk.metrics import MeterProvider
 from opentelemetry.sdk.metrics.export import InMemoryMetricReader
 from opentelemetry.sdk.resources import Resource
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+from opentelemetry.trace import StatusCode
 
 from opentelemetry.instrumentation.kedi import KediTelemetryConfig, OpenTelemetryBackend
 from opentelemetry.instrumentation.kedi.backend import (
@@ -205,7 +207,7 @@ def test_backend_marks_gen_ai_operations_and_sanitizes_attributes() -> None:
 
         [recorded] = exporter.get_finished_spans()
         assert recorded.attributes is not None
-        assert recorded.attributes["gen_ai.operation.name"] == "run_agent"
+        assert recorded.attributes["gen_ai.operation.name"] == "invoke_agent"
         assert recorded.attributes["safe.sequence"] == ("one", "two")
 
 
@@ -236,7 +238,7 @@ class _RawSpan:
 
 def test_otel_span_adapter_and_attribute_sanitization() -> None:
     raw = _RawSpan()
-    span = OpenTelemetrySpan(raw)  # type: ignore[arg-type]
+    span = OpenTelemetrySpan(raw, KediTelemetryConfig())  # type: ignore[arg-type]
     assert span.is_recording() is True
     assert span.get_attribute("missing") is None
 
@@ -250,8 +252,12 @@ def test_otel_span_adapter_and_attribute_sanitization() -> None:
     span.record_exception(error)
     span.update_name("after")
 
-    assert raw.events == [("filtered", {}), ("event", {"items": (1, 2)})]
-    assert raw.recorded == [error]
+    assert raw.events == [
+        ("filtered", {}),
+        ("event", {"items": (1, 2)}),
+        ("exception", {"exception.type": "builtins.RuntimeError"}),
+    ]
+    assert raw.recorded == []
     assert raw.name == "after"
     assert span.get_attribute("logfire.msg") == "after"
     assert _attribute_value((1, 2)) == (1, 2)
@@ -267,12 +273,14 @@ def test_backend_reports_capture_and_native_ownership() -> None:
         version="test",
         config=KediTelemetryConfig(
             capture_content=True,
-            capture_source=False,
+            capture_source_paths=True,
+            capture_source_snippets=False,
             native_span_owners={"pydantic": frozenset({"run_agent", "chat"})},
         ),
     )
     assert backend.capture_enabled("content") is True
-    assert backend.capture_enabled("source") is False
+    assert backend.capture_enabled("source_path") is True
+    assert backend.capture_enabled("source_snippet") is False
     assert backend.owns_native_spans("pydantic", "run_agent") is True
     assert backend.owns_native_spans("pydantic", "call_tool") is False
 
@@ -311,3 +319,96 @@ def test_backend_preserves_context_across_asyncio_to_thread() -> None:
             spans["compile module child"].parent.span_id
             == spans["kedi run demo.kedi"].context.span_id
         )
+
+
+def test_exception_details_are_private_by_default_and_cancellation_is_not_error() -> None:
+    secret = "SECRET_PROMPT_TOKEN_7f4b"
+    with providers() as (tracer_provider, meter_provider, exporter, _reader):
+        backend = make_backend(tracer_provider, meter_provider)
+        with pytest.raises(RuntimeError, match=secret):
+            with backend.start_span(
+                scope="runtime",
+                name="secret failure",
+                operation="run_program",
+                kind="internal",
+                level="lifecycle",
+                attributes=None,
+            ):
+                raise RuntimeError(secret)
+        with pytest.raises(asyncio.CancelledError):
+            with backend.start_span(
+                scope="runtime",
+                name="cancelled",
+                operation="run_program",
+                kind="internal",
+                level="lifecycle",
+                attributes=None,
+            ):
+                raise asyncio.CancelledError
+
+        spans = {span.name: span for span in exporter.get_finished_spans()}
+        failure = spans["secret failure"]
+        [event] = failure.events
+        assert event.name == "exception"
+        assert event.attributes == {"exception.type": "builtins.RuntimeError"}
+        assert secret not in repr(failure)
+        assert failure.status.status_code is StatusCode.ERROR
+        cancelled = spans["cancelled"]
+        assert cancelled.events == ()
+        assert cancelled.status.status_code is StatusCode.UNSET
+
+
+def test_exception_message_and_stacktrace_have_separate_bounded_opt_ins() -> None:
+    secret = "s" * 2_000
+    config = KediTelemetryConfig(
+        capture_exception_messages=True,
+        capture_exception_stacktraces=True,
+    )
+    with providers() as (tracer_provider, meter_provider, exporter, _reader):
+        backend = make_backend(tracer_provider, meter_provider, config=config)
+        with pytest.raises(RuntimeError):
+            with backend.start_span(
+                scope="runtime",
+                name="detailed failure",
+                operation="run_program",
+                kind="internal",
+                level="lifecycle",
+                attributes=None,
+            ):
+                raise RuntimeError(secret)
+
+        [recorded] = exporter.get_finished_spans()
+        [event] = recorded.events
+        assert event.attributes is not None
+        assert len(event.attributes["exception.message"]) == 1_000
+        assert len(event.attributes["exception.stacktrace"]) <= 8_000
+
+
+def test_metric_instrument_cache_respects_configured_budget() -> None:
+    config = KediTelemetryConfig(max_metric_instruments=1)
+    with providers() as (tracer_provider, meter_provider, _exporter, reader):
+        backend = make_backend(tracer_provider, meter_provider, config=config)
+        backend.add_counter(
+            scope="runtime",
+            name="kedi.first",
+            value=1,
+            unit="1",
+            attributes=None,
+        )
+        backend.add_counter(
+            scope="runtime",
+            name="kedi.second",
+            value=1,
+            unit="1",
+            attributes=None,
+        )
+
+        data = reader.get_metrics_data()
+        assert data is not None
+        names = {
+            metric.name
+            for resource_metrics in data.resource_metrics
+            for scope_metrics in resource_metrics.scope_metrics
+            for metric in scope_metrics.metrics
+        }
+        assert names == {"kedi.first"}
