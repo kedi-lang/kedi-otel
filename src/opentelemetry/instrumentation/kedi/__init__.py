@@ -77,7 +77,7 @@ class KediInstrumentor(BaseInstrumentor):
     _pending_cleanup_error: KediInstrumentationCleanupError | None = None
 
     def instrumentation_dependencies(self) -> Collection[str]:
-        return ("kedi >= 0.4.0", "pydantic-ai >= 1.95.1, < 3")
+        return ("kedi >= 0.4.0", "pydantic-ai >= 2.23.0, < 3")
 
     def instrument(self, **kwargs: Any) -> Any:
         with self._lifecycle_lock:
