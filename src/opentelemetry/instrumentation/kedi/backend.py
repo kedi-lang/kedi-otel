@@ -29,7 +29,6 @@ RuntimeDetail = Literal["off", "lifecycle", "detailed"]
 _SCOPE_NAMES: dict[TelemetryScope, str] = {
     "runtime": "kedi.runtime",
     "agent": "kedi.agent",
-    "agentic": "kedi.agentic",
     "artifacts": "kedi.artifacts",
 }
 _GEN_AI_OPERATIONS = {
@@ -45,7 +44,6 @@ _MAX_EXCEPTION_STACKTRACE_CHARS = 8_000
 class KediTelemetryConfig:
     runtime_detail: RuntimeDetail = "lifecycle"
     agent_enabled: bool = True
-    agentic_enabled: bool = True
     artifacts_enabled: bool = True
     capture_content: bool = False
     capture_binary_content: bool = False
@@ -65,8 +63,6 @@ class KediTelemetryConfig:
             return level == "lifecycle" or self.runtime_detail == "detailed"
         if scope == "agent":
             return self.agent_enabled
-        if scope == "agentic":
-            return self.agentic_enabled
         return self.artifacts_enabled
 
 

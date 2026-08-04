@@ -223,6 +223,17 @@ def test_invalid_configuration_does_not_install_backend() -> None:
     assert get_backend() is previous_backend
 
 
+def test_removed_agentic_switch_is_rejected() -> None:
+    previous_backend = get_backend()
+    instrumentor = KediInstrumentor()
+    with pytest.raises(
+        TypeError,
+        match="Unknown Kedi instrumentation options: agentic_enabled",
+    ):
+        instrumentor.instrument(agentic_enabled=False)
+    assert get_backend() is previous_backend
+
+
 def test_instrumentor_can_disable_pydantic_native_ownership() -> None:
     with providers() as (tracer_provider, meter_provider, _exporter):
         with instrumented(

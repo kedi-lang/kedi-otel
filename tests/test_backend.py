@@ -65,7 +65,7 @@ def test_backend_emits_scoped_span_with_kedi_resource() -> None:
             attributes={"kedi.entrypoint": "cli"},
         ) as active:
             active.set_attribute("kedi.result.type", "builtins.str")
-            active.add_event("kedi.run.completed", {"kedi.output.present": True})
+            active.add_event("run completed", {"kedi.output.present": True})
 
         [recorded] = exporter.get_finished_spans()
         assert recorded.instrumentation_scope is not None
@@ -76,17 +76,16 @@ def test_backend_emits_scoped_span_with_kedi_resource() -> None:
         assert recorded.attributes["kedi.operation.name"] == "run_program"
         assert recorded.attributes["kedi.entrypoint"] == "cli"
         assert recorded.attributes["kedi.result.type"] == "builtins.str"
-        assert recorded.events[0].name == "kedi.run.completed"
+        assert recorded.events[0].name == "run completed"
 
 
 def test_backend_respects_runtime_detail_and_scope_switches() -> None:
     config = KediTelemetryConfig(
         runtime_detail="lifecycle",
         agent_enabled=False,
-        agentic_enabled=False,
         artifacts_enabled=False,
     )
-    with providers() as (tracer_provider, meter_provider, exporter, _reader):
+    with providers() as (tracer_provider, meter_provider, exporter, reader):
         backend = make_backend(tracer_provider, meter_provider, config=config)
         with backend.start_span(
             scope="runtime",
@@ -106,12 +105,44 @@ def test_backend_respects_runtime_detail_and_scope_switches() -> None:
             attributes=None,
         ):
             pass
+        with backend.start_span(
+            scope="agent",
+            name="await approval write_file",
+            operation="await_approval",
+            kind="internal",
+            level="lifecycle",
+            attributes=None,
+        ):
+            pass
+        with backend.start_span(
+            scope="agent",
+            name="workflow review",
+            operation="run_workflow",
+            kind="internal",
+            level="lifecycle",
+            attributes=None,
+        ):
+            pass
+        backend.add_counter(
+            scope="agent",
+            name="kedi.approval.requests",
+            value=1,
+            unit="1",
+            attributes=None,
+        )
+        backend.record_histogram(
+            scope="agent",
+            name="kedi.workflow.duration",
+            value=0.1,
+            unit="s",
+            attributes=None,
+        )
 
         assert exporter.get_finished_spans() == ()
+        assert reader.get_metrics_data() is None
         assert backend.enabled("runtime", "lifecycle") is True
         assert backend.enabled("runtime", "detailed") is False
         assert backend.enabled("agent", "lifecycle") is False
-        assert backend.enabled("agentic", "lifecycle") is False
         assert backend.enabled("artifacts", "lifecycle") is False
 
 

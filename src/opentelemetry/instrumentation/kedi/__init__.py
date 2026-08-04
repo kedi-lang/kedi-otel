@@ -27,7 +27,6 @@ _PYDANTIC_NATIVE_OPERATIONS = frozenset({"run_agent", "chat", "call_tool"})
 _CONFIGURATION_KEYS = frozenset(
     {
         "agent_enabled",
-        "agentic_enabled",
         "artifacts_enabled",
         "capture_binary_content",
         "capture_content",
@@ -189,7 +188,6 @@ def _validated_configuration(
     config = KediTelemetryConfig(
         runtime_detail=cast(RuntimeDetail, runtime_detail),
         agent_enabled=_strict_bool(kwargs, "agent_enabled", True),
-        agentic_enabled=_strict_bool(kwargs, "agentic_enabled", True),
         artifacts_enabled=_strict_bool(kwargs, "artifacts_enabled", True),
         capture_content=_strict_bool(kwargs, "capture_content", False),
         capture_binary_content=_strict_bool(kwargs, "capture_binary_content", False),

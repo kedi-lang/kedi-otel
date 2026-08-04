@@ -23,7 +23,6 @@ types raise immediately instead of silently weakening telemetry policy.
 KediInstrumentor().instrument(
     runtime_detail="lifecycle",  # "off", "lifecycle", or "detailed"
     agent_enabled=True,
-    agentic_enabled=True,
     artifacts_enabled=True,
     capture_content=False,
     capture_binary_content=False,
@@ -40,6 +39,9 @@ KediInstrumentor().instrument(
     meter_provider=meter_provider,
 )
 ```
+
+`agent_enabled` controls the complete agent surface, including model and tool
+calls, MCP initialization, approvals, subagents, and dynamic workflows.
 
 Content, binary content, source paths, source snippets, model request parameters,
 tool definitions, exception messages, and exception stack traces are separate
