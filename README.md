@@ -41,7 +41,10 @@ KediInstrumentor().instrument(
 ```
 
 `agent_enabled` controls the complete agent surface, including model and tool
-calls, MCP initialization, approvals, subagents, and dynamic workflows.
+calls, MCP initialization, approvals, subagents, dynamic workflows, and
+CodeMode discovery and execution. CodeMode emits payload-free `search tools`,
+`get tool schema`, and `execute code` spans in the `kedi.agent` instrumentation
+scope, plus `kedi.codemode.operations` and `kedi.codemode.duration` metrics.
 
 Content, binary content, source paths, source snippets, model request parameters,
 tool definitions, exception messages, and exception stack traces are separate

@@ -14,6 +14,8 @@ from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 from opentelemetry.trace import StatusCode
 
+from kedi.agent_adapter.codemode import CodeModeSession, CodeModeTool
+from kedi.telemetry import install_backend, restore_backend
 from opentelemetry.instrumentation.kedi import KediTelemetryConfig, OpenTelemetryBackend
 from opentelemetry.instrumentation.kedi.backend import (
     OpenTelemetrySpan,
@@ -221,6 +223,94 @@ def test_backend_emits_metrics_and_filters_disabled_metrics() -> None:
             attributes=None,
         )
         assert reader.get_metrics_data() is None
+
+
+def test_backend_exports_codemode_spans_and_metrics_without_payloads() -> None:
+    with providers() as (tracer_provider, meter_provider, exporter, reader):
+        backend = make_backend(tracer_provider, meter_provider)
+        previous = install_backend(backend)
+
+        async def run() -> None:
+            session = CodeModeSession()
+            session.update_tools(
+                [
+                    CodeModeTool(
+                        name="lookup",
+                        description="Return a private value.",
+                        parameters_json_schema={
+                            "type": "object",
+                            "properties": {},
+                            "additionalProperties": False,
+                        },
+                    )
+                ]
+            )
+            try:
+                assert session.search_tools(query="look")["tool_names"] == ["lookup"]
+                session.get_tool_schema(tool_names=["lookup"])
+
+                async def invoke(_name: str, _arguments: dict[str, Any]) -> str:
+                    return "private result"
+
+                assert await session.execute_code(code="await lookup()", invoke=invoke) == (
+                    "private result"
+                )
+            finally:
+                await session.close()
+
+        try:
+            asyncio.run(run())
+        finally:
+            restore_backend(previous)
+
+        spans = exporter.get_finished_spans()
+        assert [span.name for span in spans] == [
+            "search tools",
+            "get tool schema",
+            "execute code",
+        ]
+        assert all(
+            span.instrumentation_scope is not None
+            and span.instrumentation_scope.name == "kedi.agent"
+            for span in spans
+        )
+        [search_span, schema_span, execute_span] = spans
+        assert search_span.attributes is not None
+        assert schema_span.attributes is not None
+        assert execute_span.attributes is not None
+        assert search_span.attributes["kedi.operation.name"] == "search_tools"
+        assert search_span.attributes["kedi.codemode.search.query_provided"] is True
+        assert search_span.attributes["kedi.codemode.search.result_count"] == 1
+        assert schema_span.attributes["kedi.operation.name"] == "get_tool_schema"
+        assert schema_span.attributes["kedi.codemode.schema.hydrated_count"] == 1
+        assert execute_span.attributes["kedi.operation.name"] == "execute_code"
+        assert execute_span.attributes["kedi.codemode.execute.nested_calls"] == 1
+        assert "look" not in str(spans)
+        assert "private result" not in str(spans)
+        assert "await lookup" not in str(spans)
+
+        data = reader.get_metrics_data()
+        assert data is not None
+        metrics_by_name = {
+            metric.name: metric
+            for resource_metrics in data.resource_metrics
+            for scope_metrics in resource_metrics.scope_metrics
+            for metric in scope_metrics.metrics
+        }
+        assert set(metrics_by_name) == {
+            "kedi.codemode.duration",
+            "kedi.codemode.operations",
+        }
+        operation_points = metrics_by_name["kedi.codemode.operations"].data.data_points
+        duration_points = metrics_by_name["kedi.codemode.duration"].data.data_points
+        assert sum(point.value for point in operation_points) == 3
+        assert sum(point.count for point in duration_points) == 3
+        assert {point.attributes["operation"] for point in operation_points} == {
+            "execute_code",
+            "get_tool_schema",
+            "search_tools",
+        }
+        assert {point.attributes["outcome"] for point in operation_points} == {"success"}
 
 
 def test_backend_marks_gen_ai_operations_and_sanitizes_attributes() -> None:
