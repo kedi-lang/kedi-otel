@@ -15,6 +15,14 @@ from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanE
 from opentelemetry.trace import StatusCode
 
 from kedi.agent_adapter.codemode import CodeModeSession, CodeModeTool
+from kedi.agent_adapter.hooks import (
+    AdapterHookSnapshot,
+    HookDispatcher,
+    HookDispatcherSnapshot,
+    UserPromptSubmitDecision,
+    UserPromptSubmitRequest,
+)
+from kedi.agent_profile import HookSettings
 from kedi.telemetry import install_backend, restore_backend
 from opentelemetry.instrumentation.kedi import KediTelemetryConfig, OpenTelemetryBackend
 from opentelemetry.instrumentation.kedi.backend import (
@@ -223,6 +231,65 @@ def test_backend_emits_metrics_and_filters_disabled_metrics() -> None:
             attributes=None,
         )
         assert reader.get_metrics_data() is None
+
+
+def test_backend_exports_hook_chain_span_and_metrics_without_payload() -> None:
+    prompt_canary = "private-prompt-canary"
+
+    def redact(event: Any) -> UserPromptSubmitDecision:
+        assert isinstance(event, UserPromptSubmitRequest)
+        return UserPromptSubmitDecision.edit(event.content.replace("private", "redacted"))
+
+    dispatcher = HookDispatcher(
+        HookDispatcherSnapshot.compose(
+            AdapterHookSnapshot.empty(),
+            HookSettings(user_prompt_submit=(redact,)),
+        )
+    )
+    event = UserPromptSubmitRequest(
+        run_id="run",
+        sequence=0,
+        adapter_shortname="pydantic",
+        content=prompt_canary,
+    )
+
+    with providers() as (tracer_provider, meter_provider, exporter, reader):
+        backend = make_backend(tracer_provider, meter_provider)
+        previous = install_backend(backend)
+        try:
+            result = asyncio.run(dispatcher.dispatch(event))
+        finally:
+            restore_backend(previous)
+
+        assert isinstance(result, UserPromptSubmitDecision)
+        assert result.edited_content == "redacted-prompt-canary"
+        [span] = [
+            item
+            for item in exporter.get_finished_spans()
+            if item.attributes is not None
+            and item.attributes.get("kedi.operation.name") == "run_hooks"
+        ]
+        assert span.name == "run user prompt submit hooks"
+        assert span.instrumentation_scope is not None
+        assert span.instrumentation_scope.name == "kedi.agent"
+        assert span.attributes is not None
+        assert span.attributes["kedi.hook.event"] == "user_prompt_submit"
+        assert span.attributes["kedi.hook.outcome"] == "edited"
+        assert prompt_canary not in str(span.attributes)
+
+        data = reader.get_metrics_data()
+        assert data is not None
+        metric_names = {
+            metric.name
+            for resource_metrics in data.resource_metrics
+            for scope_metrics in resource_metrics.scope_metrics
+            for metric in scope_metrics.metrics
+        }
+        assert {
+            "kedi.hook.calls",
+            "kedi.hook.duration",
+            "kedi.hook.edits",
+        } <= metric_names
 
 
 def test_backend_exports_codemode_spans_and_metrics_without_payloads() -> None:
