@@ -1,5 +1,5 @@
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling==1.32.0"]
 build-backend = "hatchling.build"
 
 [project]
@@ -10,10 +10,10 @@ readme = "README.md"
 requires-python = ">=3.10"
 license = {text = "MIT"}
 dependencies = [
-    "kedi>=0.4.0",
-    "opentelemetry-api>=1.30",
-    "opentelemetry-instrumentation>=0.51b0",
-    "pydantic-ai-slim>=2.23.0,<3",
+    "kedi>=0.4,<0.5",
+    "opentelemetry-api>=1.44,<1.45",
+    "opentelemetry-instrumentation>=0.65b0,<0.66",
+    "pydantic-ai-slim==2.36.0",
 ]
 
 [project.urls]
@@ -22,11 +22,11 @@ Repository = "https://github.com/kedi-lang/kedi-otel"
 Issues = "https://github.com/kedi-lang/kedi-otel/issues"
 
 [project.optional-dependencies]
-httpx = ["opentelemetry-instrumentation-httpx>=0.51b0"]
+httpx = ["opentelemetry-instrumentation-httpx>=0.65b0,<0.66"]
 test = [
-    "opentelemetry-sdk>=1.30",
-    "pytest>=8.2",
-    "pytest-cov>=7.1",
+    "opentelemetry-sdk>=1.44,<1.45",
+    "pytest==9.0.3",
+    "pytest-cov==7.1.0",
 ]
 
 [project.entry-points.opentelemetry_instrumentor]
@@ -34,6 +34,9 @@ kedi = "opentelemetry.instrumentation.kedi:KediInstrumentor"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/opentelemetry"]
+
+[tool.uv.sources]
+kedi = { path = "..", editable = true }
 
 [tool.ruff]
 line-length = 100
