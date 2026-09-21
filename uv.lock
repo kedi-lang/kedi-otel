@@ -365,6 +365,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
+    { name = "a2a-sdk", extras = ["http-server"], marker = "extra == 'a2a'", specifier = "==1.1.4" },
     { name = "basedpyright", marker = "extra == 'playground'", specifier = ">=1.39.6,<1.40" },
     { name = "claude-agent-sdk", marker = "extra == 'claude'", specifier = "==0.2.148" },
     { name = "click", specifier = ">=8.3.3,<9" },
@@ -397,12 +398,14 @@ requires-dist = [
     { name = "tree-sitter", specifier = "==0.25.2" },
     { name = "tree-sitter-kedi", editable = "../tree-sitter-kedi" },
     { name = "tree-sitter-python", specifier = "==0.25.0" },
+    { name = "uvicorn", marker = "extra == 'a2a'", specifier = "==0.47.0" },
     { name = "uvicorn", marker = "extra == 'playground'", specifier = ">=0.47,<0.48" },
 ]
-provides-extras = ["claude", "codex-model", "dspy", "groq", "langchain", "langchain-aws", "notebook", "playground", "terminal-bench", "typesafe"]
+provides-extras = ["a2a", "claude", "codex-model", "dspy", "groq", "langchain", "langchain-aws", "notebook", "playground", "terminal-bench", "typesafe"]
 
 [package.metadata.requires-dev]
 dev = [
+    { name = "a2a-sdk", extras = ["http-server"], specifier = "==1.1.4" },
     { name = "anthropic", specifier = "==1.6.0" },
     { name = "basedpyright", specifier = "==1.39.6" },
     { name = "cassetter", extras = ["httpx"], specifier = "==0.5.0" },
@@ -422,6 +425,7 @@ dev = [
     { name = "ruff", specifier = "==0.15.16" },
     { name = "tomli", marker = "python_full_version < '3.11'", specifier = "==2.4.1" },
     { name = "ty", specifier = "==0.0.44" },
+    { name = "uvicorn", specifier = "==0.47.0" },
 ]
 
 [[package]]
