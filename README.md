@@ -4,6 +4,23 @@
 OpenTelemetry. Importing Kedi remains a no-op; telemetry starts only after the
 instrumentor is enabled.
 
+## Installation
+
+From a Kedi source checkout with its submodules initialized:
+
+```sh
+uv sync --project kedi-otel --locked
+```
+
+This installs the checked-out Kedi runtime and instrumentor into
+`kedi-otel/.venv`. Run the application in that environment. Add `--extra httpx`
+when using HTTPX instrumentation. To install into an existing compatible
+environment instead, use `python -m pip install -e ./kedi-otel` from the Kedi
+repository root. Kedi `>=0.4,<0.5` must already be available in that environment
+or from the package index.
+
+## Usage
+
 ```python
 from opentelemetry.instrumentation.kedi import KediInstrumentor
 
