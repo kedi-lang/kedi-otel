@@ -6,11 +6,13 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from threading import Barrier, Thread
 import pytest
+from opentelemetry import trace
 from opentelemetry.sdk.metrics import MeterProvider
 from opentelemetry.sdk.metrics.export import InMemoryMetricReader
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+from opentelemetry.trace import StatusCode
 from pydantic_ai import Agent
 from pydantic_ai.models.instrumented import InstrumentationSettings
 from pydantic_ai.models.test import TestModel
@@ -527,7 +529,11 @@ def test_per_agent_disabled_instrumentation_does_not_reclassify_runtime_parent()
         assert any(span.name == "agent reviewer" for span in spans)
 
 
-def test_pydantic_sensitive_request_metadata_is_redacted_by_default() -> None:
+@pytest.mark.parametrize("capture_model_request_parameters", [False, True])
+@pytest.mark.parametrize("capture_tool_definitions", [False, True])
+def test_pydantic_sensitive_request_metadata_respects_capture_policy(
+    capture_model_request_parameters: bool, capture_tool_definitions: bool
+) -> None:
     secret = "SECRET_TOOL_DESCRIPTION_7f4b"
 
     def lookup(*, query: str = "kedi") -> str:
@@ -543,7 +549,12 @@ def test_pydantic_sensitive_request_metadata_is_redacted_by_default() -> None:
         adapter_shortname="pydantic",
     )
     with providers() as (tracer_provider, meter_provider, exporter):
-        with instrumented(tracer_provider, meter_provider):
+        with instrumented(
+            tracer_provider,
+            meter_provider,
+            capture_model_request_parameters=capture_model_request_parameters,
+            capture_tool_definitions=capture_tool_definitions,
+        ):
             adapter = PydanticAdapter(
                 TestModel(call_tools=[], custom_output_text="done", model_name="test")
             )
@@ -555,8 +566,59 @@ def test_pydantic_sensitive_request_metadata_is_redacted_by_default() -> None:
             assert asyncio.run(run()) == "done"
 
         spans = exporter.get_finished_spans()
-        assert secret not in repr(spans)
+        if not capture_model_request_parameters and not capture_tool_definitions:
+            assert all(secret not in repr(span.attributes) for span in spans)
         chat = next(span for span in spans if span.name == "chat test")
         assert chat.attributes is not None
-        assert "model_request_parameters" not in chat.attributes
-        assert "gen_ai.tool.definitions" not in chat.attributes
+        assert ("model_request_parameters" in chat.attributes) is capture_model_request_parameters
+        assert ("gen_ai.tool.definitions" in chat.attributes) is capture_tool_definitions
+        if capture_tool_definitions:
+            assert secret in str(chat.attributes["gen_ai.tool.definitions"])
+
+
+@pytest.mark.parametrize("current_span", [False, True])
+def test_pydantic_span_filters_late_updates_and_preserves_trace_lifecycle(
+    current_span: bool,
+) -> None:
+    sensitive = {
+        "model_request_parameters": "private parameters",
+        "gen_ai.tool.definitions": "private schemas",
+    }
+    with providers() as (tracer_provider, meter_provider, exporter):
+        with instrumented(tracer_provider, meter_provider):
+            instrumentation = Agent._instrument_default
+            assert isinstance(instrumentation, InstrumentationSettings)
+            tracer = instrumentation.tracer
+            context = (
+                tracer.start_as_current_span("request", attributes=sensitive)
+                if current_span
+                else trace.use_span(
+                    tracer.start_span("request", attributes=sensitive), end_on_exit=True
+                )
+            )
+            with context as span:
+                assert span.is_recording()
+                assert trace.get_current_span() is span
+                span.set_attributes({**sensitive, "gen_ai.usage.input_tokens": 42})
+                for key, value in sensitive.items():
+                    trace.get_current_span().set_attribute(key, value)
+                span.set_attribute("gen_ai.usage.output_tokens", 7)
+                span.update_name("filtered request")
+                span.add_event("checkpoint", {"stage": "done"})
+                span.record_exception(ValueError("test failure"), escaped=False)
+                span.set_status(StatusCode.ERROR, "test failure")
+                with tracer.start_as_current_span("child") as child:
+                    span.add_link(child.get_span_context())
+            assert not span.is_recording()
+
+        spans = {span.name: span for span in exporter.get_finished_spans()}
+        parent = spans["filtered request"]
+        child = spans["child"]
+        assert parent.attributes == {
+            "gen_ai.usage.input_tokens": 42,
+            "gen_ai.usage.output_tokens": 7,
+        }
+        assert child.parent == parent.context
+        assert [event.name for event in parent.events] == ["checkpoint", "exception"]
+        assert parent.status.status_code is StatusCode.ERROR
+        assert parent.links[0].context == child.context
