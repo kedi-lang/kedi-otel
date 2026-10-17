@@ -7,13 +7,13 @@ name = "opentelemetry-instrumentation-kedi"
 version = "0.1.0"
 description = "OpenTelemetry instrumentation for the Kedi programming language"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 license = {text = "MIT"}
 dependencies = [
     "kedi>=0.4,<0.5",
     "opentelemetry-api>=1.44,<1.45",
     "opentelemetry-instrumentation>=0.65b0,<0.66",
-    "pydantic-ai-slim==2.54.0",
+    "pydantic-ai-slim>=2.57.0,<2.58",
 ]
 
 [project.urls]
@@ -40,4 +40,4 @@ kedi = { path = "..", editable = true }
 
 [tool.ruff]
 line-length = 100
-target-version = "py310"
+target-version = "py311"
