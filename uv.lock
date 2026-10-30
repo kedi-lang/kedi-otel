@@ -1,5 +1,5 @@
 version = 1
-revision = 3
+revision = 5
 requires-python = ">=3.11"
 resolution-markers = [
     "python_full_version >= '3.12' and sys_platform == 'emscripten'",
@@ -232,8 +232,8 @@ name = "httpcore2"
 version = "2.12.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "h11", marker = "python_full_version < '3.12' or sys_platform != 'emscripten'" },
-    { name = "truststore", marker = "python_full_version < '3.12' or sys_platform != 'emscripten'" },
+    { name = "h11" },
+    { name = "truststore" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/be/ad/f4f0e57345f1870f3e8cb624e058d7eca6e5a27d33bcc3311d9b618734cd/httpcore2-2.12.0.tar.gz", hash = "sha256:9293522bba0aa7c4c8e9e3f040c16575bd8868e155a77fa30c7a9085a5eae648", size = 67548, upload-time = "2026-08-18T13:22:08.211Z" }
 wheels = [
@@ -340,6 +340,7 @@ requires-dist = [
     { name = "basedpyright", marker = "extra == 'playground'", specifier = ">=1.39.6,<1.40" },
     { name = "claude-agent-sdk", marker = "extra == 'claude'", specifier = "==0.2.163" },
     { name = "click", specifier = ">=8.3.3,<9" },
+    { name = "cloudpickle", marker = "extra == 'snapshots'", specifier = "==3.1.2" },
     { name = "codex-auth-helper", marker = "python_full_version >= '3.12' and extra == 'terminal-bench'", specifier = "==1.10.1" },
     { name = "codex-auth-helper", extras = ["websocket"], marker = "extra == 'codex-model'", specifier = "==1.10.1" },
     { name = "docstring-parser", specifier = ">=0.18,<0.19" },
@@ -374,7 +375,7 @@ requires-dist = [
     { name = "uvicorn", marker = "extra == 'a2a-persistence'", specifier = "==0.47.0" },
     { name = "uvicorn", marker = "extra == 'playground'", specifier = ">=0.47,<0.48" },
 ]
-provides-extras = ["a2a", "a2a-persistence", "claude", "codex-model", "dspy", "groq", "langchain", "langchain-aws", "notebook", "playground", "terminal-bench", "typesafe"]
+provides-extras = ["a2a", "a2a-persistence", "claude", "codex-model", "dspy", "groq", "langchain", "langchain-aws", "notebook", "playground", "snapshots", "terminal-bench", "typesafe"]
 
 [package.metadata.requires-dev]
 dev = [
