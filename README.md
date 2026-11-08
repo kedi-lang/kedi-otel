@@ -16,7 +16,7 @@ This installs the checked-out Kedi runtime and instrumentor into
 `kedi-otel/.venv`. Run the application in that environment. Add `--extra httpx`
 when using HTTPX instrumentation. To install into an existing compatible
 environment instead, use `python -m pip install -e ./kedi-otel` from the Kedi
-repository root. Kedi `>=0.4,<0.5` must already be available in that environment
+repository root. Kedi `>=0.1.1,<0.2` must already be available in that environment
 or from the package index.
 
 ## Usage
