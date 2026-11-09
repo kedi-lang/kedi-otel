@@ -4,19 +4,18 @@ build-backend = "hatchling.build"
 
 [project]
 name = "opentelemetry-instrumentation-kedi"
-version = "0.1.0"
+version = "0.1.1"
 description = "OpenTelemetry instrumentation for the Kedi programming language"
 readme = "README.md"
 requires-python = ">=3.11"
 license = {text = "MIT"}
+# PyPI shows the Author field in full but only the first address of Author-email, so names and
+# addresses are separate entries.
 authors = [
-    {name = "Mert Sırakaya", email = "mert@kedi-lang.org"},
-    {name = "Doğukan Yiğit Polat", email = "yigit@neurograph.net"},
-]
-# PyPI shows only the first author and the first maintainer, so the two lists differ in order.
-maintainers = [
-    {name = "Doğukan Yiğit Polat", email = "yigit@neurograph.net"},
-    {name = "Mert Sırakaya", email = "mert@kedi-lang.org"},
+    {name = "Mert Sırakaya"},
+    {name = "Doğukan Yiğit Polat"},
+    {email = "mert@kedi-lang.org"},
+    {email = "yigit@neurograph.net"},
 ]
 dependencies = [
     "kedi>=0.1.1,<0.2",

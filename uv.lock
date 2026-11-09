@@ -494,7 +494,7 @@ wheels = [
 
 [[package]]
 name = "opentelemetry-instrumentation-kedi"
-version = "0.1.0"
+version = "0.1.1"
 source = { editable = "." }
 dependencies = [
     { name = "kedi" },
@@ -1240,7 +1240,7 @@ wheels = [
 
 [[package]]
 name = "tree-sitter-kedi"
-version = "0.4.6"
+version = "0.4.7"
 source = { editable = "../tree-sitter-kedi" }
 dependencies = [
     { name = "tree-sitter" },
