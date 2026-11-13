@@ -1737,7 +1737,7 @@ wheels = [
 
 [[package]]
 name = "tree-sitter-kedi"
-version = "0.4.8"
+version = "0.4.9"
 source = { editable = "../tree-sitter-kedi" }
 dependencies = [
     { name = "tree-sitter" },
