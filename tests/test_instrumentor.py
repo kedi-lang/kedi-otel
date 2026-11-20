@@ -310,7 +310,7 @@ def test_httpx_instrumentation_respects_existing_owner_and_owns_new_instance(
             instrument_httpx=True,
         ):
             pass
-    assert calls == ["instrument"]
+    assert calls == ["instrument", "uninstrument"]
 
     calls.clear()
     FakeHTTPXInstrumentor.already_instrumented = True
@@ -697,3 +697,60 @@ def test_redacting_tracer_use_span_exception_is_filtered() -> None:
         events = {event.name: dict(event.attributes or {}) for event in recorded.events}
         assert secret not in repr(recorded)
         assert events["exception"] == {"exception.type": "builtins.RuntimeError"}
+
+
+def test_httpx_uninstrument_removes_instrumentation_and_reinstrument_uses_new_provider() -> None:
+    import threading
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    import httpx
+    from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor
+
+    class _Handler(BaseHTTPRequestHandler):
+        def do_GET(self) -> None:
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b"{}")
+
+        def log_message(self, *_args: object) -> None:
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), _Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    instrumentor = KediInstrumentor()
+    try:
+        base = f"http://127.0.0.1:{server.server_address[1]}"
+
+        def get(path: str) -> int:
+            with httpx.Client(timeout=5.0, trust_env=False) as client:
+                return client.get(base + path).status_code
+
+        with providers() as (provider1, meter1, exporter1):
+            with providers() as (provider2, meter2, exporter2):
+                instrumentor.instrument(
+                    tracer_provider=provider1,
+                    meter_provider=meter1,
+                    instrument_httpx=True,
+                    instrument_pydantic_ai=False,
+                )
+                assert HTTPXClientInstrumentor().is_instrumented_by_opentelemetry is True
+                assert get("/x") == 200
+                assert len(exporter1.get_finished_spans()) == 1
+                instrumentor.uninstrument()
+                assert HTTPXClientInstrumentor().is_instrumented_by_opentelemetry is False
+                instrumentor.instrument(
+                    tracer_provider=provider2,
+                    meter_provider=meter2,
+                    instrument_httpx=True,
+                    instrument_pydantic_ai=False,
+                )
+                assert get("/y") == 200
+                assert len(exporter1.get_finished_spans()) == 1
+                assert len(exporter2.get_finished_spans()) == 1
+    finally:
+        if instrumentor.is_instrumented_by_opentelemetry:
+            instrumentor.uninstrument()
+        if HTTPXClientInstrumentor().is_instrumented_by_opentelemetry:
+            HTTPXClientInstrumentor().uninstrument()
+        server.shutdown()
+        server.server_close()
