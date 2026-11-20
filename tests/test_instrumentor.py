@@ -29,8 +29,10 @@ from kedi.telemetry import (
 from opentelemetry.instrumentation.kedi import (
     KediInstrumentationCleanupError,
     KediInstrumentor,
+    KediTelemetryConfig,
     OpenTelemetryBackend,
 )
+from opentelemetry.instrumentation.kedi._pydantic import _RedactingSpan, _RedactingTracer
 
 
 @contextmanager
@@ -308,7 +310,7 @@ def test_httpx_instrumentation_respects_existing_owner_and_owns_new_instance(
             instrument_httpx=True,
         ):
             pass
-    assert calls == ["instrument"]
+    assert calls == ["instrument", "uninstrument"]
 
     calls.clear()
     FakeHTTPXInstrumentor.already_instrumented = True
@@ -622,3 +624,172 @@ def test_pydantic_span_filters_late_updates_and_preserves_trace_lifecycle(
         assert [event.name for event in parent.events] == ["checkpoint", "exception"]
         assert parent.status.status_code is StatusCode.ERROR
         assert parent.links[0].context == child.context
+
+
+def test_redacting_span_exception_event_and_link_follow_capture_policy() -> None:
+    secret = "SECRET_PROMPT_TOKEN_9c2d"
+    config = KediTelemetryConfig()
+    with providers() as (tracer_provider, _meter_provider, exporter):
+        tracer = tracer_provider.get_tracer("otel-o1")
+        other = tracer.start_span("other")
+        raw = tracer.start_span("pydantic-span")
+        wrap = _RedactingSpan(raw, config)
+        try:
+            raise ValueError(f"model failed on prompt: {secret}")
+        except ValueError as exc:
+            wrap.record_exception(exc)
+        wrap.add_event(
+            "tool.result",
+            {
+                "model_request_parameters": "{'temperature': 0.7}",
+                "gen_ai.tool.definitions": "[secret-tool]",
+                "gen_ai.usage.input_tokens": 3,
+            },
+        )
+        wrap.add_link(other.get_span_context(), {"model_request_parameters": "secret"})
+        raw.end()
+        other.end()
+
+        [recorded] = [
+            span for span in exporter.get_finished_spans() if span.name == "pydantic-span"
+        ]
+        events = {event.name: dict(event.attributes or {}) for event in recorded.events}
+        assert secret not in repr(recorded)
+        assert events["exception"] == {"exception.type": "builtins.ValueError"}
+        assert events["tool.result"] == {"gen_ai.usage.input_tokens": 3}
+        [link] = recorded.links
+        assert dict(link.attributes or {}) == {}
+
+
+def test_redacting_span_exception_opt_ins_export_bounded_details() -> None:
+    secret = "s" * 2_000
+    config = KediTelemetryConfig(
+        capture_exception_messages=True,
+        capture_exception_stacktraces=True,
+    )
+    with providers() as (tracer_provider, _meter_provider, exporter):
+        raw = tracer_provider.get_tracer("otel-o1").start_span("pydantic-span")
+        wrap = _RedactingSpan(raw, config)
+        try:
+            raise ValueError(secret)
+        except ValueError as exc:
+            wrap.record_exception(exc)
+        raw.end()
+
+        [recorded] = exporter.get_finished_spans()
+        [event] = recorded.events
+        assert event.name == "exception"
+        assert event.attributes is not None
+        assert len(event.attributes["exception.message"]) == 1_000
+        assert len(event.attributes["exception.stacktrace"]) <= 8_000
+
+
+def test_redacting_tracer_use_span_exception_is_filtered() -> None:
+    secret = "SECRET_PROMPT_TOKEN_9c2d"
+    config = KediTelemetryConfig()
+    with providers() as (tracer_provider, _meter_provider, exporter):
+        tracer = _RedactingTracer(tracer_provider.get_tracer("otel-o1"), config)
+        with pytest.raises(RuntimeError, match=secret):
+            with tracer.start_as_current_span("pydantic-use-span"):
+                raise RuntimeError(f"agent blew up: {secret}")
+
+        [recorded] = exporter.get_finished_spans()
+        events = {event.name: dict(event.attributes or {}) for event in recorded.events}
+        assert secret not in repr(recorded)
+        assert events["exception"] == {"exception.type": "builtins.RuntimeError"}
+
+
+def test_httpx_uninstrument_removes_instrumentation_and_reinstrument_uses_new_provider() -> None:
+    import threading
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    import httpx
+    from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor
+
+    class _Handler(BaseHTTPRequestHandler):
+        def do_GET(self) -> None:
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b"{}")
+
+        def log_message(self, *_args: object) -> None:
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), _Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    instrumentor = KediInstrumentor()
+    try:
+        base = f"http://127.0.0.1:{server.server_address[1]}"
+
+        def get(path: str) -> int:
+            with httpx.Client(timeout=5.0, trust_env=False) as client:
+                return client.get(base + path).status_code
+
+        with providers() as (provider1, meter1, exporter1):
+            with providers() as (provider2, meter2, exporter2):
+                instrumentor.instrument(
+                    tracer_provider=provider1,
+                    meter_provider=meter1,
+                    instrument_httpx=True,
+                    instrument_pydantic_ai=False,
+                )
+                assert HTTPXClientInstrumentor().is_instrumented_by_opentelemetry is True
+                assert get("/x") == 200
+                assert len(exporter1.get_finished_spans()) == 1
+                instrumentor.uninstrument()
+                assert HTTPXClientInstrumentor().is_instrumented_by_opentelemetry is False
+                instrumentor.instrument(
+                    tracer_provider=provider2,
+                    meter_provider=meter2,
+                    instrument_httpx=True,
+                    instrument_pydantic_ai=False,
+                )
+                assert get("/y") == 200
+                assert len(exporter1.get_finished_spans()) == 1
+                assert len(exporter2.get_finished_spans()) == 1
+    finally:
+        if instrumentor.is_instrumented_by_opentelemetry:
+            instrumentor.uninstrument()
+        if HTTPXClientInstrumentor().is_instrumented_by_opentelemetry:
+            HTTPXClientInstrumentor().uninstrument()
+        server.shutdown()
+        server.server_close()
+
+
+def test_redacting_tracer_start_as_current_span_starts_on_enter() -> None:
+    import gc
+
+    with providers() as (tracer_provider, _meter_provider, exporter):
+        real_tracer = tracer_provider.get_tracer("otel-o4")
+        started: list = []
+
+        class _RecordingTracer:
+            def start_span(self, *args: object, **kwargs: object) -> object:
+                span = real_tracer.start_span(*args, **kwargs)
+                started.append(span)
+                return span
+
+        tracer = _RedactingTracer(_RecordingTracer(), KediTelemetryConfig())  # type: ignore[arg-type]
+        cm = tracer.start_as_current_span("never-entered")
+        assert started == []
+        del cm
+        gc.collect()
+        assert exporter.get_finished_spans() == ()
+        with tracer.start_as_current_span("entered"):
+            pass
+        assert len(started) == 1
+        assert [span.name for span in exporter.get_finished_spans()] == ["entered"]
+
+
+def test_agent_disabled_skips_pydantic_instrumentation() -> None:
+    previous_backend = get_backend()
+    previous_pydantic = Agent._instrument_default
+    with providers() as (tracer_provider, meter_provider, _exporter):
+        with instrumented(tracer_provider, meter_provider, agent_enabled=False):
+            backend = get_backend()
+            assert isinstance(backend, OpenTelemetryBackend)
+            assert Agent._instrument_default is previous_pydantic
+            assert backend.owns_native_spans("pydantic", "run_agent") is False
+
+    assert get_backend() is previous_backend
+    assert Agent._instrument_default is previous_pydantic

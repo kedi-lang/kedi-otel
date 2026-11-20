@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import math
 import traceback
 from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
@@ -87,6 +88,8 @@ class OpenTelemetrySpan:
         return self._attributes.get(name)
 
     def set_attribute(self, name: str, value: AttributeValue) -> None:
+        if not self._span.is_recording():
+            return
         safe = _attribute_value(value)
         if safe is not None:
             self._attributes[name] = safe
@@ -99,28 +102,47 @@ class OpenTelemetrySpan:
         if self._exception_recorded:
             return
         self._exception_recorded = True
-        attributes: dict[str, AttributeValue] = {
-            "exception.type": f"{type(exc).__module__}.{type(exc).__qualname__}",
-        }
-        if self._config.capture_exception_messages:
-            attributes["exception.message"] = str(exc)[:_MAX_EXCEPTION_MESSAGE_CHARS]
-        if self._config.capture_exception_stacktraces:
-            attributes["exception.stacktrace"] = "".join(
-                traceback.format_exception(type(exc), exc, exc.__traceback__)
-            )[:_MAX_EXCEPTION_STACKTRACE_CHARS]
-        self.add_event("exception", attributes)
+        self.add_event("exception", _exception_attributes(exc, self._config))
 
     def update_name(self, name: str) -> None:
         self._span.update_name(name)
         self.set_attribute("logfire.msg", name)
 
 
+def _exception_attributes(
+    exc: BaseException, config: KediTelemetryConfig
+) -> dict[str, AttributeValue]:
+    """Exception event attributes honouring the capture policy.
+
+    Only ``exception.type`` is always included; the message and the
+    stacktrace are opt-in, bounded, and off by default so prompts and tool
+    output carried by an exception are not exported by accident.
+    """
+
+    attributes: dict[str, AttributeValue] = {
+        "exception.type": f"{type(exc).__module__}.{type(exc).__qualname__}",
+    }
+    if config.capture_exception_messages:
+        attributes["exception.message"] = str(exc)[:_MAX_EXCEPTION_MESSAGE_CHARS]
+    if config.capture_exception_stacktraces:
+        attributes["exception.stacktrace"] = "".join(
+            traceback.format_exception(type(exc), exc, exc.__traceback__)
+        )[:_MAX_EXCEPTION_STACKTRACE_CHARS]
+    return attributes
+
+
 def _attribute_value(value: object) -> AttributeValue | None:
+    if isinstance(value, memoryview):
+        return value.tobytes().decode("utf-8", "replace")
     if isinstance(value, (bool, str, int, float)):
+        if isinstance(value, float) and not math.isfinite(value):
+            return None
         return value
     if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
         safe = tuple(item for item in value if isinstance(item, (bool, str, int, float)))
         if len(safe) != len(value):
+            return None
+        if any(isinstance(item, float) and not math.isfinite(item) for item in safe):
             return None
         value_types = {type(item) for item in safe}
         return safe if len(value_types) <= 1 else None
@@ -162,6 +184,8 @@ class OpenTelemetryBackend:
             for scope, name in _SCOPE_NAMES.items()
         }
         self._instrument_lock = RLock()
+        self._active_spans: dict[tuple[int, int], OpenTelemetrySpan] = {}
+        self._active_spans_lock = RLock()
         self._counters: dict[tuple[TelemetryScope, str, str], Any] = {}
         self._up_down_counters: dict[tuple[TelemetryScope, str, str], Any] = {}
         self._histograms: dict[tuple[TelemetryScope, str, str], Any] = {}
@@ -206,17 +230,41 @@ class OpenTelemetryBackend:
             set_status_on_exception=False,
         ) as raw_span:
             active = OpenTelemetrySpan(raw_span, self.config, span_attributes)
+            self._register_active_span(active)
             try:
                 yield active
+            except GeneratorExit:
+                raise
             except asyncio.CancelledError:
                 raise
             except BaseException as exc:
                 active.record_exception(exc)
                 raw_span.set_status(Status(StatusCode.ERROR))
                 raise
+            finally:
+                self._unregister_active_span(active)
 
     def current_span(self) -> TelemetrySpan:
-        return OpenTelemetrySpan(trace.get_current_span(), self.config)
+        current = trace.get_current_span()
+        context = current.get_span_context()
+        if context is not None and context.is_valid:
+            with self._active_spans_lock:
+                active = self._active_spans.get((context.trace_id, context.span_id))
+            if active is not None:
+                return active
+        return OpenTelemetrySpan(current, self.config)
+
+    def _register_active_span(self, span: OpenTelemetrySpan) -> None:
+        context = span._span.get_span_context()
+        with self._active_spans_lock:
+            self._active_spans[(context.trace_id, context.span_id)] = span
+
+    def _unregister_active_span(self, span: OpenTelemetrySpan) -> None:
+        context = span._span.get_span_context()
+        with self._active_spans_lock:
+            key = (context.trace_id, context.span_id)
+            if self._active_spans.get(key) is span:
+                del self._active_spans[key]
 
     def enabled(self, scope: TelemetryScope, level: SpanLevel) -> bool:
         return self.config.scope_enabled(scope, level)

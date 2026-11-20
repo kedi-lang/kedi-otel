@@ -22,7 +22,7 @@ from ._pydantic import (
 )
 from .backend import KediTelemetryConfig, OpenTelemetryBackend, RuntimeDetail
 
-_FALLBACK_VERSION = "0.1.0"
+_FALLBACK_VERSION = "0.1.1"
 _PYDANTIC_NATIVE_OPERATIONS = frozenset({"run_agent", "chat", "call_tool"})
 _CONFIGURATION_KEYS = frozenset(
     {
@@ -58,6 +58,7 @@ class _InstrumentationSession:
     backend: OpenTelemetryBackend
     previous_backend: TelemetryBackend
     pydantic: PydanticInstrumentationSession | None = None
+    httpx: Any = None  # HTTPXClientInstrumentor, only when this session installed it
 
 
 class KediInstrumentationCleanupError(RuntimeError):
@@ -77,7 +78,7 @@ class KediInstrumentor(BaseInstrumentor):
     _pending_cleanup_error: KediInstrumentationCleanupError | None = None
 
     def instrumentation_dependencies(self) -> Collection[str]:
-        return ("kedi >= 0.1.1, < 0.2", "pydantic-ai-slim >= 2.23.0, < 3")
+        return ("kedi >= 0.1.1, < 0.2", "pydantic-ai-slim >= 2.66.0, < 2.67")
 
     def instrument(self, **kwargs: Any) -> Any:
         with self._lifecycle_lock:
@@ -108,7 +109,7 @@ class KediInstrumentor(BaseInstrumentor):
             previous_backend=install_backend(backend),
         )
         try:
-            if instrument_pydantic_ai:
+            if instrument_pydantic_ai and config.agent_enabled:
                 pydantic_session = install_pydantic_instrumentation(
                     config=config,
                     tracer_provider=tracer_provider,
@@ -116,9 +117,12 @@ class KediInstrumentor(BaseInstrumentor):
                 )
                 session = replace(session, pydantic=pydantic_session)
             if instrument_httpx:
-                _ensure_httpx_instrumented(
-                    tracer_provider=tracer_provider,
-                    meter_provider=meter_provider,
+                session = replace(
+                    session,
+                    httpx=_ensure_httpx_instrumented(
+                        tracer_provider=tracer_provider,
+                        meter_provider=meter_provider,
+                    ),
                 )
         except BaseException as exc:
             cleanup_error = _cleanup_session(session)
@@ -158,6 +162,11 @@ def _cleanup_session(
             restore_pydantic_instrumentation(session.pydantic)
         except BaseException as exc:
             failures.append(exc)
+    if session.httpx is not None:
+        try:
+            session.httpx.uninstrument()
+        except BaseException as exc:
+            failures.append(exc)
     try:
         restore_backend_if_current(
             expected=session.backend,
@@ -181,13 +190,18 @@ def _validated_configuration(
         raise ValueError(f"Unknown Kedi runtime detail: {runtime_detail!r}")
     instrument_pydantic_ai = _strict_bool(kwargs, "instrument_pydantic_ai", True)
     instrument_httpx = _strict_bool(kwargs, "instrument_httpx", False)
+    agent_enabled = _strict_bool(kwargs, "agent_enabled", True)
     max_metric_instruments = kwargs.get("max_metric_instruments", 128)
     if type(max_metric_instruments) is not int or max_metric_instruments < 1:
         raise TypeError("max_metric_instruments must be a positive int")
-    native_owners = {"pydantic": _PYDANTIC_NATIVE_OPERATIONS} if instrument_pydantic_ai else {}
+    native_owners = (
+        {"pydantic": _PYDANTIC_NATIVE_OPERATIONS}
+        if instrument_pydantic_ai and agent_enabled
+        else {}
+    )
     config = KediTelemetryConfig(
         runtime_detail=cast(RuntimeDetail, runtime_detail),
-        agent_enabled=_strict_bool(kwargs, "agent_enabled", True),
+        agent_enabled=agent_enabled,
         artifacts_enabled=_strict_bool(kwargs, "artifacts_enabled", True),
         capture_content=_strict_bool(kwargs, "capture_content", False),
         capture_binary_content=_strict_bool(kwargs, "capture_binary_content", False),
@@ -222,7 +236,13 @@ def _ensure_httpx_instrumented(
     *,
     tracer_provider: TracerProvider | None,
     meter_provider: MeterProvider | None,
-) -> None:
+) -> Any:
+    """Instrument HTTPX, returning the instrumentor this session owns.
+
+    Returns ``None`` when HTTPX is already instrumented by someone else, so
+    cleanup never tears down instrumentation it did not install.
+    """
+
     try:
         from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor
     except ImportError as exc:
@@ -231,11 +251,12 @@ def _ensure_httpx_instrumented(
         ) from exc
     instrumentor = HTTPXClientInstrumentor()
     if instrumentor.is_instrumented_by_opentelemetry:
-        return
+        return None
     instrumentor.instrument(
         tracer_provider=tracer_provider,
         meter_provider=meter_provider,
     )
+    return instrumentor
 
 
 __all__ = [
