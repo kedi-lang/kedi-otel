@@ -600,3 +600,31 @@ def test_metric_instrument_cache_respects_configured_budget() -> None:
             for metric in scope_metrics.metrics
         }
         assert names == {"kedi.first"}
+
+
+def test_current_span_returns_same_wrapper_for_active_span() -> None:
+    with providers() as (tracer_provider, meter_provider, exporter, _reader):
+        backend = make_backend(tracer_provider, meter_provider)
+        with backend.start_span(
+            scope="agent",
+            name="n",
+            operation="chat",
+            kind="client",
+            level="lifecycle",
+            attributes={"seed": "42"},
+        ) as span:
+            span.set_attribute("late", "yes")
+            current = backend.current_span()
+            assert current is span
+            assert current.get_attribute("seed") == "42"
+            assert current.get_attribute("late") == "yes"
+            assert current.get_attribute("kedi.operation.name") == "chat"
+            boom = RuntimeError("dedup-test")
+            backend.current_span().record_exception(boom)
+            backend.current_span().record_exception(boom)
+            span.record_exception(boom)
+            span.record_exception(boom)
+
+        [recorded] = exporter.get_finished_spans()
+        assert sum(1 for event in recorded.events if event.name == "exception") == 1
+        assert backend.current_span() is not span

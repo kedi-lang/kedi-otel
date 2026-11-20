@@ -175,6 +175,8 @@ class OpenTelemetryBackend:
             for scope, name in _SCOPE_NAMES.items()
         }
         self._instrument_lock = RLock()
+        self._active_spans: dict[tuple[int, int], OpenTelemetrySpan] = {}
+        self._active_spans_lock = RLock()
         self._counters: dict[tuple[TelemetryScope, str, str], Any] = {}
         self._up_down_counters: dict[tuple[TelemetryScope, str, str], Any] = {}
         self._histograms: dict[tuple[TelemetryScope, str, str], Any] = {}
@@ -219,6 +221,7 @@ class OpenTelemetryBackend:
             set_status_on_exception=False,
         ) as raw_span:
             active = OpenTelemetrySpan(raw_span, self.config, span_attributes)
+            self._register_active_span(active)
             try:
                 yield active
             except asyncio.CancelledError:
@@ -227,9 +230,30 @@ class OpenTelemetryBackend:
                 active.record_exception(exc)
                 raw_span.set_status(Status(StatusCode.ERROR))
                 raise
+            finally:
+                self._unregister_active_span(active)
 
     def current_span(self) -> TelemetrySpan:
-        return OpenTelemetrySpan(trace.get_current_span(), self.config)
+        current = trace.get_current_span()
+        context = current.get_span_context()
+        if context is not None and context.is_valid:
+            with self._active_spans_lock:
+                active = self._active_spans.get((context.trace_id, context.span_id))
+            if active is not None:
+                return active
+        return OpenTelemetrySpan(current, self.config)
+
+    def _register_active_span(self, span: OpenTelemetrySpan) -> None:
+        context = span._span.get_span_context()
+        with self._active_spans_lock:
+            self._active_spans[(context.trace_id, context.span_id)] = span
+
+    def _unregister_active_span(self, span: OpenTelemetrySpan) -> None:
+        context = span._span.get_span_context()
+        with self._active_spans_lock:
+            key = (context.trace_id, context.span_id)
+            if self._active_spans.get(key) is span:
+                del self._active_spans[key]
 
     def enabled(self, scope: TelemetryScope, level: SpanLevel) -> bool:
         return self.config.scope_enabled(scope, level)
