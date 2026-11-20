@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import math
 import traceback
 from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
@@ -87,6 +88,8 @@ class OpenTelemetrySpan:
         return self._attributes.get(name)
 
     def set_attribute(self, name: str, value: AttributeValue) -> None:
+        if not self._span.is_recording():
+            return
         safe = _attribute_value(value)
         if safe is not None:
             self._attributes[name] = safe
@@ -129,11 +132,17 @@ def _exception_attributes(
 
 
 def _attribute_value(value: object) -> AttributeValue | None:
+    if isinstance(value, memoryview):
+        return value.tobytes().decode("utf-8", "replace")
     if isinstance(value, (bool, str, int, float)):
+        if isinstance(value, float) and not math.isfinite(value):
+            return None
         return value
     if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
         safe = tuple(item for item in value if isinstance(item, (bool, str, int, float)))
         if len(safe) != len(value):
+            return None
+        if any(isinstance(item, float) and not math.isfinite(item) for item in safe):
             return None
         value_types = {type(item) for item in safe}
         return safe if len(value_types) <= 1 else None

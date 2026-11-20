@@ -12,7 +12,7 @@ from opentelemetry.sdk.resources import Resource
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
-from opentelemetry.trace import StatusCode
+from opentelemetry.trace import INVALID_SPAN_CONTEXT, NonRecordingSpan, StatusCode
 
 from kedi.agent_adapter.codemode import CodeModeSession, CodeModeTool
 from kedi.agent_adapter.hooks import (
@@ -652,3 +652,41 @@ def test_generator_exit_is_not_an_error() -> None:
         [recorded] = exporter.get_finished_spans()
         assert recorded.status.status_code is StatusCode.UNSET
         assert recorded.events == ()
+
+
+def test_attribute_sanitizer_drops_non_finite_and_encodes_memoryview() -> None:
+    assert _attribute_value(float("nan")) is None
+    assert _attribute_value(float("inf")) is None
+    assert _attribute_value(float("-inf")) is None
+    assert _attribute_value((1.0, float("nan"))) is None
+    assert _attribute_value((1, 2)) == (1, 2)
+    assert _attribute_value(memoryview(b"abc")) == "abc"
+    assert _attribute_value(b"abc") is None
+    assert _attribute_value(bytearray(b"abc")) is None
+
+
+def test_nan_attribute_does_not_reach_exporter() -> None:
+    with providers() as (tracer_provider, meter_provider, exporter, _reader):
+        backend = make_backend(tracer_provider, meter_provider)
+        with backend.start_span(
+            scope="runtime",
+            name="nan",
+            operation="run_program",
+            kind="internal",
+            level="lifecycle",
+            attributes=None,
+        ) as span:
+            span.set_attribute("nan_attr", float("nan"))
+            span.set_attribute("ok_attr", "yes")
+
+        [recorded] = exporter.get_finished_spans()
+        assert recorded.attributes is not None
+        assert "nan_attr" not in recorded.attributes
+        assert recorded.attributes["ok_attr"] == "yes"
+
+
+def test_set_attribute_does_not_mutate_cache_of_non_recording_span() -> None:
+    dead = OpenTelemetrySpan(NonRecordingSpan(INVALID_SPAN_CONTEXT), KediTelemetryConfig())
+    assert dead.is_recording() is False
+    dead.set_attribute("ghost", "value")
+    assert dead.get_attribute("ghost") is None
