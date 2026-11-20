@@ -22,7 +22,7 @@ from ._pydantic import (
 )
 from .backend import KediTelemetryConfig, OpenTelemetryBackend, RuntimeDetail
 
-_FALLBACK_VERSION = "0.1.0"
+_FALLBACK_VERSION = "0.1.1"
 _PYDANTIC_NATIVE_OPERATIONS = frozenset({"run_agent", "chat", "call_tool"})
 _CONFIGURATION_KEYS = frozenset(
     {
@@ -78,7 +78,7 @@ class KediInstrumentor(BaseInstrumentor):
     _pending_cleanup_error: KediInstrumentationCleanupError | None = None
 
     def instrumentation_dependencies(self) -> Collection[str]:
-        return ("kedi >= 0.1.1, < 0.2", "pydantic-ai-slim >= 2.23.0, < 3")
+        return ("kedi >= 0.1.1, < 0.2", "pydantic-ai-slim >= 2.66.0, < 2.67")
 
     def instrument(self, **kwargs: Any) -> Any:
         with self._lifecycle_lock:
