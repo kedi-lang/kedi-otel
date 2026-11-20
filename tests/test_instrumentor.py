@@ -754,3 +754,28 @@ def test_httpx_uninstrument_removes_instrumentation_and_reinstrument_uses_new_pr
             HTTPXClientInstrumentor().uninstrument()
         server.shutdown()
         server.server_close()
+
+
+def test_redacting_tracer_start_as_current_span_starts_on_enter() -> None:
+    import gc
+
+    with providers() as (tracer_provider, _meter_provider, exporter):
+        real_tracer = tracer_provider.get_tracer("otel-o4")
+        started: list = []
+
+        class _RecordingTracer:
+            def start_span(self, *args: object, **kwargs: object) -> object:
+                span = real_tracer.start_span(*args, **kwargs)
+                started.append(span)
+                return span
+
+        tracer = _RedactingTracer(_RecordingTracer(), KediTelemetryConfig())  # type: ignore[arg-type]
+        cm = tracer.start_as_current_span("never-entered")
+        assert started == []
+        del cm
+        gc.collect()
+        assert exporter.get_finished_spans() == ()
+        with tracer.start_as_current_span("entered"):
+            pass
+        assert len(started) == 1
+        assert [span.name for span in exporter.get_finished_spans()] == ["entered"]

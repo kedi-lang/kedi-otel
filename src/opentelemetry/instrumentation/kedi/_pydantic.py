@@ -98,6 +98,64 @@ class _RedactingSpan(Span):
         self._span.add_event("exception", event_attributes, timestamp)
 
 
+class _LazyCurrentSpan(AbstractContextManager[Span]):
+    """Start the span on ``__enter__``, not when the manager is built.
+
+    The previous implementation started the span eagerly and wrapped it in
+    ``trace.use_span``; a manager that was created but never entered leaked
+    a started, never-ended span.
+    """
+
+    def __init__(
+        self,
+        tracer: _RedactingTracer,
+        name: str,
+        context: Any = None,
+        kind: SpanKind = SpanKind.INTERNAL,
+        attributes: Mapping[str, AttributeValue] | None = None,
+        links: Sequence[Link] | None = None,
+        start_time: int | None = None,
+        record_exception: bool = True,
+        set_status_on_exception: bool = True,
+        end_on_exit: bool = True,
+    ) -> None:
+        self._tracer = tracer
+        self._name = name
+        self._context = context
+        self._kind = kind
+        self._attributes = attributes
+        self._links = links
+        self._start_time = start_time
+        self._record_exception = record_exception
+        self._set_status_on_exception = set_status_on_exception
+        self._end_on_exit = end_on_exit
+        self._use_span: AbstractContextManager[Span] | None = None
+
+    def __enter__(self) -> Span:
+        span = self._tracer.start_span(
+            self._name,
+            context=self._context,
+            kind=self._kind,
+            attributes=self._attributes,
+            links=self._links,
+            start_time=self._start_time,
+            record_exception=self._record_exception,
+            set_status_on_exception=self._set_status_on_exception,
+        )
+        self._use_span = trace.use_span(
+            span,
+            record_exception=self._record_exception,
+            set_status_on_exception=self._set_status_on_exception,
+            end_on_exit=self._end_on_exit,
+        )
+        return self._use_span.__enter__()
+
+    def __exit__(self, exc_type: Any, exc_value: Any, traceback: Any) -> bool | None:
+        if self._use_span is None:
+            return None
+        return self._use_span.__exit__(exc_type, exc_value, traceback)
+
+
 class _RedactingTracer:
     """Filter sensitive Pydantic AI attributes before provider export."""
 
@@ -140,7 +198,8 @@ class _RedactingTracer:
         set_status_on_exception: bool = True,
         end_on_exit: bool = True,
     ) -> AbstractContextManager[Span]:
-        span = self.start_span(
+        return _LazyCurrentSpan(
+            self,
             name,
             context=context,
             kind=kind,
@@ -149,15 +208,7 @@ class _RedactingTracer:
             start_time=start_time,
             record_exception=record_exception,
             set_status_on_exception=set_status_on_exception,
-        )
-        return cast(
-            "AbstractContextManager[Span]",
-            trace.use_span(
-                span,
-                record_exception=record_exception,
-                set_status_on_exception=set_status_on_exception,
-                end_on_exit=end_on_exit,
-            ),
+            end_on_exit=end_on_exit,
         )
 
 
