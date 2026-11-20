@@ -32,6 +32,7 @@ Issues = "https://github.com/kedi-lang/kedi-otel/issues"
 [project.optional-dependencies]
 httpx = ["opentelemetry-instrumentation-httpx>=0.66b2,<0.67"]
 test = [
+    "httpx>=0.28,<0.29",
     "opentelemetry-sdk>=1.45.2,<1.46",
     "pytest==9.2.0",
     "pytest-cov==7.1.0",
