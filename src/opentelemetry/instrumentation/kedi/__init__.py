@@ -109,7 +109,7 @@ class KediInstrumentor(BaseInstrumentor):
             previous_backend=install_backend(backend),
         )
         try:
-            if instrument_pydantic_ai:
+            if instrument_pydantic_ai and config.agent_enabled:
                 pydantic_session = install_pydantic_instrumentation(
                     config=config,
                     tracer_provider=tracer_provider,
@@ -190,13 +190,18 @@ def _validated_configuration(
         raise ValueError(f"Unknown Kedi runtime detail: {runtime_detail!r}")
     instrument_pydantic_ai = _strict_bool(kwargs, "instrument_pydantic_ai", True)
     instrument_httpx = _strict_bool(kwargs, "instrument_httpx", False)
+    agent_enabled = _strict_bool(kwargs, "agent_enabled", True)
     max_metric_instruments = kwargs.get("max_metric_instruments", 128)
     if type(max_metric_instruments) is not int or max_metric_instruments < 1:
         raise TypeError("max_metric_instruments must be a positive int")
-    native_owners = {"pydantic": _PYDANTIC_NATIVE_OPERATIONS} if instrument_pydantic_ai else {}
+    native_owners = (
+        {"pydantic": _PYDANTIC_NATIVE_OPERATIONS}
+        if instrument_pydantic_ai and agent_enabled
+        else {}
+    )
     config = KediTelemetryConfig(
         runtime_detail=cast(RuntimeDetail, runtime_detail),
-        agent_enabled=_strict_bool(kwargs, "agent_enabled", True),
+        agent_enabled=agent_enabled,
         artifacts_enabled=_strict_bool(kwargs, "artifacts_enabled", True),
         capture_content=_strict_bool(kwargs, "capture_content", False),
         capture_binary_content=_strict_bool(kwargs, "capture_binary_content", False),

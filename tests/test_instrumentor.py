@@ -779,3 +779,17 @@ def test_redacting_tracer_start_as_current_span_starts_on_enter() -> None:
             pass
         assert len(started) == 1
         assert [span.name for span in exporter.get_finished_spans()] == ["entered"]
+
+
+def test_agent_disabled_skips_pydantic_instrumentation() -> None:
+    previous_backend = get_backend()
+    previous_pydantic = Agent._instrument_default
+    with providers() as (tracer_provider, meter_provider, _exporter):
+        with instrumented(tracer_provider, meter_provider, agent_enabled=False):
+            backend = get_backend()
+            assert isinstance(backend, OpenTelemetryBackend)
+            assert Agent._instrument_default is previous_pydantic
+            assert backend.owns_native_spans("pydantic", "run_agent") is False
+
+    assert get_backend() is previous_backend
+    assert Agent._instrument_default is previous_pydantic
