@@ -29,8 +29,10 @@ from kedi.telemetry import (
 from opentelemetry.instrumentation.kedi import (
     KediInstrumentationCleanupError,
     KediInstrumentor,
+    KediTelemetryConfig,
     OpenTelemetryBackend,
 )
+from opentelemetry.instrumentation.kedi._pydantic import _RedactingSpan, _RedactingTracer
 
 
 @contextmanager
@@ -622,3 +624,76 @@ def test_pydantic_span_filters_late_updates_and_preserves_trace_lifecycle(
         assert [event.name for event in parent.events] == ["checkpoint", "exception"]
         assert parent.status.status_code is StatusCode.ERROR
         assert parent.links[0].context == child.context
+
+
+def test_redacting_span_exception_event_and_link_follow_capture_policy() -> None:
+    secret = "SECRET_PROMPT_TOKEN_9c2d"
+    config = KediTelemetryConfig()
+    with providers() as (tracer_provider, _meter_provider, exporter):
+        tracer = tracer_provider.get_tracer("otel-o1")
+        other = tracer.start_span("other")
+        raw = tracer.start_span("pydantic-span")
+        wrap = _RedactingSpan(raw, config)
+        try:
+            raise ValueError(f"model failed on prompt: {secret}")
+        except ValueError as exc:
+            wrap.record_exception(exc)
+        wrap.add_event(
+            "tool.result",
+            {
+                "model_request_parameters": "{'temperature': 0.7}",
+                "gen_ai.tool.definitions": "[secret-tool]",
+                "gen_ai.usage.input_tokens": 3,
+            },
+        )
+        wrap.add_link(other.get_span_context(), {"model_request_parameters": "secret"})
+        raw.end()
+        other.end()
+
+        [recorded] = [
+            span for span in exporter.get_finished_spans() if span.name == "pydantic-span"
+        ]
+        events = {event.name: dict(event.attributes or {}) for event in recorded.events}
+        assert secret not in repr(recorded)
+        assert events["exception"] == {"exception.type": "builtins.ValueError"}
+        assert events["tool.result"] == {"gen_ai.usage.input_tokens": 3}
+        [link] = recorded.links
+        assert dict(link.attributes or {}) == {}
+
+
+def test_redacting_span_exception_opt_ins_export_bounded_details() -> None:
+    secret = "s" * 2_000
+    config = KediTelemetryConfig(
+        capture_exception_messages=True,
+        capture_exception_stacktraces=True,
+    )
+    with providers() as (tracer_provider, _meter_provider, exporter):
+        raw = tracer_provider.get_tracer("otel-o1").start_span("pydantic-span")
+        wrap = _RedactingSpan(raw, config)
+        try:
+            raise ValueError(secret)
+        except ValueError as exc:
+            wrap.record_exception(exc)
+        raw.end()
+
+        [recorded] = exporter.get_finished_spans()
+        [event] = recorded.events
+        assert event.name == "exception"
+        assert event.attributes is not None
+        assert len(event.attributes["exception.message"]) == 1_000
+        assert len(event.attributes["exception.stacktrace"]) <= 8_000
+
+
+def test_redacting_tracer_use_span_exception_is_filtered() -> None:
+    secret = "SECRET_PROMPT_TOKEN_9c2d"
+    config = KediTelemetryConfig()
+    with providers() as (tracer_provider, _meter_provider, exporter):
+        tracer = _RedactingTracer(tracer_provider.get_tracer("otel-o1"), config)
+        with pytest.raises(RuntimeError, match=secret):
+            with tracer.start_as_current_span("pydantic-use-span"):
+                raise RuntimeError(f"agent blew up: {secret}")
+
+        [recorded] = exporter.get_finished_spans()
+        events = {event.name: dict(event.attributes or {}) for event in recorded.events}
+        assert secret not in repr(recorded)
+        assert events["exception"] == {"exception.type": "builtins.RuntimeError"}

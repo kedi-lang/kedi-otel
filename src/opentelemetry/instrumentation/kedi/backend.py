@@ -99,20 +99,33 @@ class OpenTelemetrySpan:
         if self._exception_recorded:
             return
         self._exception_recorded = True
-        attributes: dict[str, AttributeValue] = {
-            "exception.type": f"{type(exc).__module__}.{type(exc).__qualname__}",
-        }
-        if self._config.capture_exception_messages:
-            attributes["exception.message"] = str(exc)[:_MAX_EXCEPTION_MESSAGE_CHARS]
-        if self._config.capture_exception_stacktraces:
-            attributes["exception.stacktrace"] = "".join(
-                traceback.format_exception(type(exc), exc, exc.__traceback__)
-            )[:_MAX_EXCEPTION_STACKTRACE_CHARS]
-        self.add_event("exception", attributes)
+        self.add_event("exception", _exception_attributes(exc, self._config))
 
     def update_name(self, name: str) -> None:
         self._span.update_name(name)
         self.set_attribute("logfire.msg", name)
+
+
+def _exception_attributes(
+    exc: BaseException, config: KediTelemetryConfig
+) -> dict[str, AttributeValue]:
+    """Exception event attributes honouring the capture policy.
+
+    Only ``exception.type`` is always included; the message and the
+    stacktrace are opt-in, bounded, and off by default so prompts and tool
+    output carried by an exception are not exported by accident.
+    """
+
+    attributes: dict[str, AttributeValue] = {
+        "exception.type": f"{type(exc).__module__}.{type(exc).__qualname__}",
+    }
+    if config.capture_exception_messages:
+        attributes["exception.message"] = str(exc)[:_MAX_EXCEPTION_MESSAGE_CHARS]
+    if config.capture_exception_stacktraces:
+        attributes["exception.stacktrace"] = "".join(
+            traceback.format_exception(type(exc), exc, exc.__traceback__)
+        )[:_MAX_EXCEPTION_STACKTRACE_CHARS]
+    return attributes
 
 
 def _attribute_value(value: object) -> AttributeValue | None:

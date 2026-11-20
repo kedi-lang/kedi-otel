@@ -19,7 +19,7 @@ from opentelemetry.trace import (
 )
 from opentelemetry.util.types import Attributes, AttributeValue
 
-from .backend import KediTelemetryConfig
+from .backend import KediTelemetryConfig, _exception_attributes
 
 _MODEL_REQUEST_PARAMETERS = "model_request_parameters"
 _TOOL_DEFINITIONS = "gen_ai.tool.definitions"
@@ -34,6 +34,14 @@ def _filtered(attributes: Attributes, config: KediTelemetryConfig) -> Attributes
     if not config.capture_tool_definitions:
         filtered.pop(_TOOL_DEFINITIONS, None)
     return filtered
+
+
+def _filtered_links(
+    links: Sequence[Link] | None, config: KediTelemetryConfig
+) -> Sequence[Link] | None:
+    if links is None:
+        return None
+    return [Link(link.context, _filtered(link.attributes, config)) for link in links]
 
 
 class _RedactingSpan(Span):
@@ -61,10 +69,10 @@ class _RedactingSpan(Span):
     def add_event(
         self, name: str, attributes: Attributes = None, timestamp: int | None = None
     ) -> None:
-        self._span.add_event(name, attributes, timestamp)
+        self._span.add_event(name, _filtered(attributes, self._config), timestamp)
 
     def add_link(self, context: SpanContext, attributes: Attributes = None) -> None:
-        self._span.add_link(context, attributes)
+        self._span.add_link(context, _filtered(attributes, self._config))
 
     def update_name(self, name: str) -> None:
         self._span.update_name(name)
@@ -79,7 +87,15 @@ class _RedactingSpan(Span):
         timestamp: int | None = None,
         escaped: bool = False,
     ) -> None:
-        self._span.record_exception(exception, attributes, timestamp, escaped)
+        # Follow the same capture policy as OpenTelemetrySpan: never hand the
+        # SDK's record_exception() the exception, it always exports the full
+        # message and stacktrace. Emit the event ourselves instead.
+        event_attributes = _exception_attributes(exception, self._config)
+        if attributes is not None:
+            event_attributes = {**(_filtered(attributes, self._config) or {}), **event_attributes}
+        if escaped:
+            event_attributes["exception.escaped"] = True
+        self._span.add_event("exception", event_attributes, timestamp)
 
 
 class _RedactingTracer:
@@ -105,7 +121,7 @@ class _RedactingTracer:
             context=context,
             kind=kind,
             attributes=_filtered(attributes, self._config),
-            links=links,
+            links=_filtered_links(links, self._config),
             start_time=start_time,
             record_exception=record_exception,
             set_status_on_exception=set_status_on_exception,
