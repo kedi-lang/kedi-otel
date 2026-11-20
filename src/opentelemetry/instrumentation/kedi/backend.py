@@ -224,6 +224,8 @@ class OpenTelemetryBackend:
             self._register_active_span(active)
             try:
                 yield active
+            except GeneratorExit:
+                raise
             except asyncio.CancelledError:
                 raise
             except BaseException as exc:

@@ -628,3 +628,27 @@ def test_current_span_returns_same_wrapper_for_active_span() -> None:
         [recorded] = exporter.get_finished_spans()
         assert sum(1 for event in recorded.events if event.name == "exception") == 1
         assert backend.current_span() is not span
+
+
+def test_generator_exit_is_not_an_error() -> None:
+    with providers() as (tracer_provider, meter_provider, exporter, _reader):
+        backend = make_backend(tracer_provider, meter_provider)
+
+        def gen() -> Iterator[str]:
+            with backend.start_span(
+                scope="runtime",
+                name="g",
+                operation="run_program",
+                kind="internal",
+                level="lifecycle",
+                attributes=None,
+            ):
+                yield "inside"
+
+        g = gen()
+        assert next(g) == "inside"
+        g.close()
+
+        [recorded] = exporter.get_finished_spans()
+        assert recorded.status.status_code is StatusCode.UNSET
+        assert recorded.events == ()
