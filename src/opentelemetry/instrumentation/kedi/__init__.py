@@ -22,7 +22,7 @@ from ._pydantic import (
 )
 from .backend import KediTelemetryConfig, OpenTelemetryBackend, RuntimeDetail
 
-_FALLBACK_VERSION = "0.1.1"
+_FALLBACK_VERSION = "0.1.2"
 _PYDANTIC_NATIVE_OPERATIONS = frozenset({"run_agent", "chat", "call_tool"})
 _CONFIGURATION_KEYS = frozenset(
     {
